@@ -1,6 +1,7 @@
 #include "devicemanager.h"
 #include "stopwatch.h"
 #include "usbprogrammer.h"
+#include "bc_def.h"
 #include <cstring>
 
 DeviceManager::DeviceManager()
@@ -11,7 +12,7 @@ DeviceManager::DeviceManager()
 bool DeviceManager::IsSupported()
 {
     uint16_t id;
-    if(!programmer->Read(0xff9a, &id)) return false;
+    if(!programmer->Read(GBL_CHIP_VERSION, &id)) return false;
     return id == 0x4826;
 }
 
@@ -22,44 +23,46 @@ bool DeviceManager::XapResetAndGo()
     int reset_count = 0;
     StopWatch timer;
     uint16_t tmp;
-    int xx = 0x540000;
 
     programmer->SetTransferSpeed(0x189);
-    programmer->Write(0x6A, 2);
+    programmer->Write(SPI_EMU_CMD, SPI_EMU_CMD_XAP_RUN_B_MASK);
     timer.start();
-    while (timer.elapsedmsec() < 0x10 )
-      programmer->Write(0x6A, 2);
+    while (timer.elapsedmsec() < 16 )
+      programmer->Write(SPI_EMU_CMD, SPI_EMU_CMD_XAP_RUN_B_MASK);
 
     programmer->SetTransferSpeed(4);
     for(int i=0;i<100;i++)
     {
-      if ( !programmer->Read(0x73, &tmp) )
+      if ( !programmer->Read(MMU_FLASH_BANK_SELECT, &tmp) )
       {
-        if ( tmp >= 0x200u )
-          programmer->Write(0x73u, 0);
+        if ( tmp >= 0x200 )
+          programmer->Write(MMU_FLASH_BANK_SELECT, 0);
         if(++reset_count >= 10)
             break;
       }
     }
 
+    /* write instructions - endless loop and execute it */
+    uint32_t xx = 0x540000;
     uint32_t address = 0xa000 + xx - 0x140000;
-    programmer->Write(address,0);
-    programmer->Write(address + 1, 0);
-    programmer->Write(address + 2, 0xE0u);
-    programmer->Write(0xFFE9, xx >> 16);
-    programmer->Write(0xFFEA, xx);
+    programmer->Write(address,   0x0000); //nop
+    programmer->Write(address+1, 0x0000); //nop
+    programmer->Write(address+2, 0x00E0); //x: bra x
+    programmer->Write(XAP_PCH, xx >> 16);
+    programmer->Write(XAP_PCL, xx);
 
-    programmer->Read(0xFF7E, &tmp);
+    programmer->Read(ANA_CONFIG2, &tmp);
     tmp &= 0xEFFF;
-    programmer->Write(0xFF7E, tmp);
-    programmer->Write(0xFFDE, 0);
-    programmer->Read(0xFFE8, &tmp);
-    tmp &= 0x20u;
-    programmer->Write(0xFFE8, tmp);
-    programmer->Write(0x76, 2);
-    programmer->Write(0xFF91, 5);
-    programmer->Write(0x77, 1);
-    programmer->Write(0x6A, 0);
+    programmer->Write(ANA_CONFIG2, tmp);
+    programmer->Write(GBL_CLK_RATE, 0);
+    programmer->Read(XAP_FLAGS, &tmp);
+    tmp &= 0x20;
+    programmer->Write(XAP_FLAGS, tmp);
+    programmer->Write(RSTGEN_WATCHDOG_DELAY, 2);
+    programmer->Write(GBL_RST_ENABLES, RST_WATCHDOG_EN_MASK |
+                                       RST_FULL_CHIP_RESET);
+    programmer->Write(RSTGEN_WATCHDOG_KICK, 1);
+    programmer->Write(SPI_EMU_CMD, 0);
 
     return true;
 }
@@ -69,14 +72,14 @@ bool DeviceManager::XapResetAndStop()
     if(!IsSupported()) return false;
 
     int status;
-    uint16_t data[0x6B],tmp;
+    uint16_t tmp;
     StopWatch timer;
 
     XapResetAndGo();
     timer.start();
     do
     {
-        programmer->ReadBlock(0xFF91, 1, &tmp);
+        programmer->Read(GBL_RST_ENABLES, &tmp);
         if ( tmp )
             status = 0;
         else
@@ -87,29 +90,18 @@ bool DeviceManager::XapResetAndStop()
     if(status < 2)
         return false;
 
-    for (int i = 0; i < 20; ++i )
-        programmer->Write(0x6A, 2);
-
-    memset(data, 0, 0xD6);
-
-    programmer->WriteBlock(0, 0x6B, data);
-    programmer->Write(0x6A, 2);
-    programmer->Write(0x6A, 2);
-    programmer->WriteBlock(0xFFE0, 16, data);
-    programmer->Write(0xFFEB, 0xff);
-    programmer->Write(0xFFEC, 0xffff);
-
-    return true;
+    return XapStop();
 }
 
 bool DeviceManager::XapGo()
 {
     if(!IsSupported()) return false;
 
-    programmer->Write(0x6A,2);
-    programmer->Write(0x6A,3);
-    programmer->Write(0x6A,2);
-    programmer->Write(0x6A,1);
+    programmer->Write(SPI_EMU_CMD,SPI_EMU_CMD_XAP_RUN_B_MASK);
+    programmer->Write(SPI_EMU_CMD,SPI_EMU_CMD_XAP_STEP_MASK |
+                                  SPI_EMU_CMD_XAP_RUN_B_MASK);
+    programmer->Write(SPI_EMU_CMD,SPI_EMU_CMD_XAP_RUN_B_MASK);
+    programmer->Write(SPI_EMU_CMD,SPI_EMU_CMD_XAP_STEP_MASK);
 
     return true;
 }
@@ -121,18 +113,18 @@ bool DeviceManager::XapStop()
     uint16_t data[0x6B];//,tmp;
 
     for (int i = 0; i < 20; ++i )
-        programmer->Write(0x6A, 2);
+        programmer->Write(SPI_EMU_CMD, SPI_EMU_CMD_XAP_RUN_B_MASK);
 
     memset(data, 0, sizeof(data));
 
     programmer->WriteBlock(0, 0x6B, data);
-    programmer->Write(0x6A, 2);
-    programmer->Write(0x6A, 2);
-    /*programmer->Read(0xFFEB, &tmp);
-    programmer->Read(0xFFEC, &tmp)*/
-    programmer->WriteBlock(0xFFE0, 16, data);
-    programmer->Write(0xFFEB, 0xff);
-    programmer->Write(0xFFEC, 0xffff);
+    programmer->Write(SPI_EMU_CMD, SPI_EMU_CMD_XAP_RUN_B_MASK);
+    programmer->Write(SPI_EMU_CMD, SPI_EMU_CMD_XAP_RUN_B_MASK);
+
+    /* reset all register to their default values */
+    programmer->WriteBlock(XAP_AH, 16, data);
+    programmer->Write(XAP_BRK_REGH, 0xff);
+    programmer->Write(XAP_BRK_REGL, 0xffff);
 
     return true;
 }

@@ -144,13 +144,13 @@ bool Flash::bootprog_run()
     // set xtal speed to 26 MHz
     int xtalsetting1 = 0x6F00;
     int xtalsetting2 = 0x0E00;
-    programmer->Write(boot_addr,xtalsetting1 | 0x10);
+    programmer->Write(boot_addr,  xtalsetting1 | 0x10);
     programmer->Write(boot_addr+2,xtalsetting2 | 0x10);
 
     //run bootprog
     int address = (boot_addr-0xA000)+0x140000;
-    programmer->Write(0xFFE9, address >> 16);
-    programmer->Write(0xFFEA, address);
+    programmer->Write(XAP_PCH, address >> 16);
+    programmer->Write(XAP_PCL, address);
 
     if(!manager.XapGo()) return false;
     return wait_to_stop(3000);
@@ -163,7 +163,7 @@ bool Flash::bootprog_load_and_run()
     cout << "Downloading Flash Stub..." << endl;
     for(int i=0; i<3; i++) {
         // load boot program
-        programmer->Write(0xFF52,0);
+        programmer->Write(GBL_MISC2_ENABLES,0);
         programmer->WriteBlock(prog_data_addr,
                                prog_data_length,
                                boot_prog_data);
